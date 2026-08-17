@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Roommate Scraper History</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+  h1 { text-align: center; margin-bottom: 8px; font-size: 1.5em; }
+  .subtitle { text-align: center; color: #8b949e; margin-bottom: 24px; font-size: 0.9em; }
+  .stats { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
+  .stat { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px 24px; text-align: center; min-width: 140px; }
+  .stat .label { color: #8b949e; font-size: 0.8em; text-transform: uppercase; }
+  .stat .value { font-size: 1.8em; font-weight: bold; color: #58a6ff; }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 1000px; margin: 0 auto 32px; }
+  .chart-box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .chart-box h3 { font-size: 0.85em; color: #8b949e; margin-bottom: 8px; }
+  .full-width { grid-column: 1 / -1; }
+  .table-box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; max-width: 1000px; margin: 0 auto; }
+  .table-box h3 { font-size: 0.9em; color: #8b949e; margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+  th { text-align: left; color: #8b949e; padding: 8px; border-bottom: 1px solid #30363d; }
+  td { padding: 8px; border-bottom: 1px solid #21262d; }
+  .score { display: inline-block; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 0.85em; }
+  .s-high { background: #0d4429; color: #3fb950; }
+  .s-mid { background: #3d2e00; color: #d29922; }
+  .s-low { background: #3b1f1f; color: #f85149; }
+  .empty { text-align: center; color: #8b949e; padding: 40px; }
+  @media (max-width: 700px) { .charts { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<h1>Roommate Scraper</h1>
+<p class="subtitle">Daily history — $200-$350/mo private rooms across AZ</p>
+
+<div class="stats" id="stats"></div>
+<div class="charts">
+  <div class="chart-box"><h3>Total Listings Found</h3><canvas id="c1"></canvas></div>
+  <div class="chart-box"><h3>Good Listings (score >= 50)</h3><canvas id="c2"></canvas></div>
+  <div class="chart-box"><h3>Average Price</h3><canvas id="c3"></canvas></div>
+  <div class="chart-box"><h3>Average Score</h3><canvas id="c4"></canvas></div>
+</div>
+<div class="table-box">
+  <h3>Recent Daily Summaries</h3>
+  <table><thead><tr><th>Date</th><th>Total</th><th>Good</th><th>Avg Price</th><th>Median</th><th>Avg Score</th></tr></thead>
+  <tbody id="tbody"></tbody></table>
+</div>
+
+<script>
+fetch('data/history.json').then(r => r.json()).then(data => {
+  if (!data.length) { document.querySelector('.table-box').innerHTML = '<div class="empty">No history yet. Run the scraper to start collecting data.</div>'; return; }
+
+  const recent = data.slice(-30);
+  const labels = recent.map(d => d.date.slice(5));
+  const latest = data[data.length - 1];
+
+  document.getElementById('stats').innerHTML = [
+    ['Total', latest.total],
+    ['Good', latest.good],
+    ['Avg Price', '$' + latest.avg_price.toLocaleString()],
+    ['Avg Score', latest.avg_score],
+    ['Days Tracked', data.length]
+  ].map(([l,v]) => `<div class="stat"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+
+  const opts = { responsive: true, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } }, y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } } } };
+  const c = (id, vals, color) => new Chart(document.getElementById(id), { type: 'line', data: { labels, datasets: [{ data: vals, borderColor: color, backgroundColor: color + '22', fill: true, tension: 0.3, pointRadius: 2 }] }, options: opts });
+
+  c('c1', recent.map(d => d.total), '#58a6ff');
+  c('c2', recent.map(d => d.good), '#3fb950');
+  c('c3', recent.map(d => d.avg_price), '#d29922');
+  c('c4', recent.map(d => d.avg_score), '#bc8cff');
+
+  const rows = data.slice(-14).reverse();
+  document.getElementById('tbody').innerHTML = rows.map(d => {
+    const cls = d.avg_score >= 60 ? 's-high' : d.avg_score >= 45 ? 's-mid' : 's-low';
+    return `<tr><td>${d.date}</td><td>${d.total}</td><td>${d.good}</td><td>$${d.avg_price.toLocaleString()}</td><td>$${d.median_price.toLocaleString()}</td><td><span class="score ${cls}">${d.avg_score}</span></td></tr>`;
+  }).join('');
+}).catch(() => {
+  document.querySelector('.table-box').innerHTML = '<div class="empty">No history yet. Run the scraper to start collecting data.</div>';
+});
+</script>
+</body>
+</html>

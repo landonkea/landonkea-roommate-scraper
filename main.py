@@ -5,6 +5,7 @@ main.py - Entry point. Calls everything else.
 from datetime import datetime
 from database import init_db, clear_old, get_top_listings, get_stats
 from scraper import scrape_all, scrape_padsplit
+from history import save_daily_summary
 
 
 def main():
@@ -21,6 +22,7 @@ def main():
 
     total, good = get_stats(conn)
     print(f'\nDone - {total} total, {good} good (score >= 50)')
+    save_daily_summary(conn)
 
     print('\n--- TOP LISTINGS ---')
     for title, price, url, loc, score in get_top_listings(conn):
