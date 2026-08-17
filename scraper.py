@@ -117,13 +117,56 @@ def scrape_playwright_sites(conn, save_listing, send_alert):
     return saved
 
 
-def scrape_one_site(conn, site, save_listing, send_alert):
-    """Scrape one site with its own browser."""
+def _extract_listing(text):
+    """
+    Pull a (price, title) pair out of one link's container text, or
+    None if there's no parseable price. Shared by every Playwright
+    site (they all render a listing card as free-form innerText with
+    no consistent markup to select against, so this heuristic --
+    first '$' amount is the price, first long non-price line is the
+    title -- is the only thing that works uniformly across sites).
+    """
+    price_match = re.search(r'\$([\d,]+)', text)
+    if not price_match:
+        return None
+    price = float(price_match.group(1).replace(',', ''))
+
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    title = ''
+    for line in lines:
+        if len(line) > 10 and '$' not in line:
+            title = line
+            break
+    if not title:
+        title = lines[0] if lines else 'Room listing'
+
+    return price, title
+
+
+def _scrape_playwright_site(conn, name, url_template, js, scroll_times, scroll_pixels,
+                             href_filter, save_listing, send_alert):
+    """
+    Shared browser-driven scrape loop: one site, its own browser, every
+    AZ city in turn. Extracted from what used to be two near-identical
+    ~70-line copies (the generic PLAYWRIGHT_SITES path and PadSplit's
+    own separate function), the only real differences between sites
+    were the JS extraction script, how many times/how far to scroll
+    (PadSplit's page needed more, 5x1000px vs. the rest's 3x800px), and
+    PadSplit's extra "/az/ in href" filter, all now parameters instead
+    of copy-pasted with one line changed.
+
+    Args:
+        name: source name used for db rows / alerts / log lines.
+        url_template: format string with one `{}` for the city slug.
+        js: the page.evaluate() script that collects {href, text} pairs.
+        scroll_times / scroll_pixels: how many scrollBy() calls, and by
+            how much, before reading the page (lets more content load).
+        href_filter: optional callable(href) -> bool; a link is skipped
+            unless this returns True. None means no extra filtering
+            (the generic sites' behavior; PadSplit passes one to only
+            keep '/az/' listing links).
+    """
     saved = 0
-    name = site['name']
-    domain = site['domain']
-    url_template = site['url']
-    js = GENERIC_JS.replace('DOMAIN', domain)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -140,8 +183,8 @@ def scrape_one_site(conn, site, save_listing, send_alert):
                 continue
 
             try:
-                for _ in range(3):
-                    page.evaluate('window.scrollBy(0, 800)')
+                for _ in range(scroll_times):
+                    page.evaluate(f'window.scrollBy(0, {scroll_pixels})')
                     time.sleep(0.3)
             except:
                 pass
@@ -153,22 +196,15 @@ def scrape_one_site(conn, site, save_listing, send_alert):
 
             for item in data:
                 href = item.get('href', '')
-                text = item.get('text', '')
-                price_match = re.search(r'\$([\d,]+)', text)
-                if not price_match:
-                    continue
-                price = float(price_match.group(1).replace(',', ''))
-                if price < MIN_PRICE or price > MAX_PRICE:
+                if href_filter and not href_filter(href):
                     continue
 
-                lines = [l.strip() for l in text.split('\n') if l.strip()]
-                title = ''
-                for line in lines:
-                    if len(line) > 10 and '$' not in line:
-                        title = line
-                        break
-                if not title:
-                    title = lines[0] if lines else 'Room listing'
+                extracted = _extract_listing(item.get('text', ''))
+                if extracted is None:
+                    continue
+                price, title = extracted
+                if price < MIN_PRICE or price > MAX_PRICE:
+                    continue
 
                 if should_skip(title):
                     continue
@@ -186,77 +222,31 @@ def scrape_one_site(conn, site, save_listing, send_alert):
     return saved
 
 
+def scrape_one_site(conn, site, save_listing, send_alert):
+    """Scrape one PLAYWRIGHT_SITES entry with its own browser."""
+    js = GENERIC_JS.replace('DOMAIN', site['domain'])
+    return _scrape_playwright_site(
+        conn, site['name'], site['url'], js,
+        scroll_times=3, scroll_pixels=800, href_filter=None,
+        save_listing=save_listing, send_alert=send_alert,
+    )
+
+
 def scrape_padsplit(conn):
     """Scrape PadSplit with its own browser."""
     from database import save_listing
     from discord import send_alert
 
-    saved = 0
-
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context()
-            Stealth().apply_stealth_sync(context)
-            page = context.new_page()
-
-            for city in AZ_CITIES:
-                url = f'https://www.padsplit.com/rooms-for-rent/{city}-az'
-                try:
-                    page.goto(url, wait_until='domcontentloaded', timeout=12000)
-                    time.sleep(2)
-                except:
-                    continue
-
-                try:
-                    for _ in range(5):
-                        page.evaluate('window.scrollBy(0, 1000)')
-                        time.sleep(0.3)
-                except:
-                    pass
-
-                try:
-                    data = page.evaluate(PADSPLIT_JS)
-                except:
-                    continue
-
-                for item in data:
-                    href = item.get('href', '')
-                    if '/az/' not in href:
-                        continue
-                    text = item.get('text', '')
-                    price_match = re.search(r'\$([\d,]+)', text)
-                    if not price_match:
-                        continue
-                    price = float(price_match.group(1).replace(',', ''))
-                    if price < MIN_PRICE or price > MAX_PRICE:
-                        continue
-
-                    lines = [l.strip() for l in text.split('\n') if l.strip()]
-                    title = ''
-                    for line in lines:
-                        if len(line) > 10 and '$' not in line:
-                            title = line
-                            break
-                    if not title:
-                        title = lines[0] if lines else 'Room listing'
-
-                    if should_skip(title):
-                        continue
-
-                    score = score_listing(title, price)
-
-                    if save_listing(conn, 'padsplit', href, title, price, href, city, score):
-                        saved += 1
-                        if score >= 50:
-                            send_alert(title, price, href, city, score)
-
-            browser.close()
+        return _scrape_playwright_site(
+            conn, 'padsplit', 'https://www.padsplit.com/rooms-for-rent/{}-az', PADSPLIT_JS,
+            scroll_times=5, scroll_pixels=1000,
+            href_filter=lambda href: '/az/' in href,
+            save_listing=save_listing, send_alert=send_alert,
+        )
     except Exception as e:
         print(f'  padsplit: error - {e}')
-
-    print(f'  padsplit: +{saved}')
-    return saved
+        return 0
 
 
 def parse_cl_row(row, region):
